@@ -83,7 +83,6 @@ const (
 type HeaderFlags uint16
 
 const (
-	HeaderFlagsKey              string      = "HeaderFlags"
 	HeaderFlagSupportOutOfOrder HeaderFlags = 0x01
 	HeaderFlagDuplexReverse     HeaderFlags = 0x08
 	HeaderFlagSASL              HeaderFlags = 0x10
@@ -126,7 +125,8 @@ func (t ttHeader) encode(ctx context.Context, message remote.Message, out remote
 
 	totalLenField = headerMeta[0:4]
 	headerInfoSizeField := headerMeta[12:14]
-	binary.BigEndian.PutUint32(headerMeta[4:8], TTHeaderMagic+uint32(getFlags(message)))
+	flags := HeaderFlags(message.Header().Flags())
+	binary.BigEndian.PutUint32(headerMeta[4:8], TTHeaderMagic+uint32(flags))
 	binary.BigEndian.PutUint32(headerMeta[8:12], uint32(message.RPCInfo().Invocation().SeqID()))
 
 	var transformIDs []uint8 // transformIDs not support TODO compress
@@ -164,7 +164,9 @@ func (t ttHeader) decode(ctx context.Context, message remote.Message, in remote.
 	totalLen := Bytes2Uint32NoCheck(headerMeta[:Size32])
 
 	flags := Bytes2Uint16NoCheck(headerMeta[Size16*3:])
-	setFlags(flags, message)
+	if message.MessageType() == remote.Call {
+		message.Header().SetFlags(flags)
+	}
 
 	seqID := Bytes2Uint32NoCheck(headerMeta[Size32*2 : Size32*3])
 	if err = SetOrCheckSeqID(int32(seqID), message); err != nil {
@@ -363,20 +365,6 @@ func skipACLToken(idx *int, buf []byte) error {
 		return fmt.Errorf("error reading acl token: %s", err.Error())
 	}
 	return nil
-}
-
-func getFlags(message remote.Message) HeaderFlags {
-	var headerFlags HeaderFlags
-	if message.Tags() != nil && message.Tags()[HeaderFlagsKey] != nil {
-		headerFlags = message.Tags()[HeaderFlagsKey].(HeaderFlags)
-	}
-	return headerFlags
-}
-
-func setFlags(flags uint16, message remote.Message) {
-	if message.MessageType() == remote.Call {
-		message.Tags()[HeaderFlagsKey] = flags
-	}
 }
 
 // protoID just for ttheader
