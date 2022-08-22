@@ -115,42 +115,97 @@ const (
 
 type ttHeader struct{}
 
-func (t ttHeader) encode(ctx context.Context, message remote.Message, out remote.ByteBuffer) (totalLenField []byte, err error) {
-	// 1. header meta
-	var headerMeta []byte
-	headerMeta, err = out.Malloc(TTHeaderMetaSize)
+func (t ttHeader) encode(ctx context.Context, message remote.Message, out remote.ByteBuffer) ([]byte, error) {
+	tm := message.TransInfo()
+	strKV := tm.TransStrInfo()
+	intKV := tm.TransIntInfo()
+	total, headerInfoSize := t.calcEncodeLength(strKV, intKV)
+
+	buf, err := out.Malloc(total)
 	if err != nil {
-		return nil, perrors.NewProtocolErrorWithMsg(fmt.Sprintf("ttHeader malloc header meta failed, %s", err.Error()))
+		return nil, perrors.NewProtocolErrorWithMsg(fmt.Sprintf("ttHeader malloc failed: %s", err.Error()))
 	}
 
-	totalLenField = headerMeta[0:4]
-	headerInfoSizeField := headerMeta[12:14]
+	// _ = buf[15] // bounds check
+	// 1. header meta
 	flags := HeaderFlags(message.Header().Flags())
-	binary.BigEndian.PutUint32(headerMeta[4:8], TTHeaderMagic+uint32(flags))
-	binary.BigEndian.PutUint32(headerMeta[8:12], uint32(message.RPCInfo().Invocation().SeqID()))
+	binary.BigEndian.PutUint32(buf[4:8], TTHeaderMagic+uint32(flags))
+	binary.BigEndian.PutUint32(buf[8:12], uint32(message.RPCInfo().Invocation().SeqID()))
+	binary.BigEndian.PutUint16(buf[12:14], uint16(headerInfoSize/4))
 
-	var transformIDs []uint8 // transformIDs not support TODO compress
-	// 2.  header info, malloc and write
-	if err = WriteByte(byte(getProtocolID(message.ProtocolInfo())), out); err != nil {
-		return nil, perrors.NewProtocolErrorWithMsg(fmt.Sprintf("ttHeader write protocol id failed, %s", err.Error()))
-	}
-	if err = WriteByte(byte(len(transformIDs)), out); err != nil {
-		return nil, perrors.NewProtocolErrorWithMsg(fmt.Sprintf("ttHeader write transformIDs length failed, %s", err.Error()))
-	}
-	for tid := range transformIDs {
-		if err = WriteByte(byte(tid), out); err != nil {
-			return nil, perrors.NewProtocolErrorWithMsg(fmt.Sprintf("ttHeader write transformIDs failed, %s", err.Error()))
+	// 2.  header info
+	// PROTOCOL ID(u8) + NUM TRANSFORMS(always 0)(u8) + TRANSFORM IDs([]u8)
+	buf[14] = byte(getProtocolID(message.ProtocolInfo()))
+	buf[15] = 0 // no transform IDs
+
+	idx := 16
+	// str kv info
+	if size := len(strKV); size > 0 {
+		// INFO ID TYPE(u8) + NUM HEADERS(u16)
+		buf[idx] = byte(InfoIDKeyValue)
+		binary.BigEndian.PutUint16(buf[idx+1:], uint16(size))
+		idx += 3
+		for k, v := range strKV {
+			lenK, lenV := len(k), len(v)
+
+			binary.BigEndian.PutUint16(buf[idx:], uint16(lenK))
+			copy(buf[idx+2:], utils.StringToSliceByte(k))
+			idx += 2 + lenK
+
+			binary.BigEndian.PutUint16(buf[idx:], uint16(lenV))
+			copy(buf[idx+2:], utils.StringToSliceByte(v))
+			idx += 2 + lenV
 		}
 	}
-	// PROTOCOL ID(u8) + NUM TRANSFORMS(always 0)(u8) + TRANSFORM IDs([]u8)
-	headerInfoSize := 1 + 1 + len(transformIDs)
-	headerInfoSize, err = writeKVInfo(headerInfoSize, message, out)
-	if err != nil {
-		return nil, perrors.NewProtocolErrorWithMsg(fmt.Sprintf("ttHeader write kv info failed, %s", err.Error()))
+	// int kv info
+	if size := len(intKV); size > 0 {
+		// INFO ID TYPE(u8) + NUM HEADERS(u16)
+		buf[idx] = byte(InfoIDIntKeyValue)
+		binary.BigEndian.PutUint16(buf[idx+1:], uint16(size))
+		idx += 3
+		for k, v := range intKV {
+			binary.BigEndian.PutUint16(buf[idx:], k)
+			idx += 2
+
+			lenV := len(v)
+			binary.BigEndian.PutUint16(buf[idx:], uint16(lenV))
+			copy(buf[idx+2:], utils.StringToSliceByte(v))
+			idx += 2 + lenV
+		}
 	}
 
-	binary.BigEndian.PutUint16(headerInfoSizeField, uint16(headerInfoSize/4))
-	return totalLenField, err
+	return buf[:4], err
+}
+
+func (t ttHeader) calcEncodeLength(strKV map[string]string, intKV map[uint16]string) (total, infoSize int) {
+	// 1. hreader meta
+	total += TTHeaderMetaSize
+
+	// 2. header info
+	infoSize += 1 /* Protocol ID (u8) */ + 1 /* number of transform IDs (u8) */ + 0 /* transform IDs u8s */
+
+	// 3. KV infos
+	if len(strKV) > 0 {
+		infoSize += 1 /* INFO ID TYPE(u8) */ + 2 /* NUM HEADERS(u16) */
+		for k, v := range strKV {
+			infoSize += 2 /* length (u16) */ + len(k)
+			infoSize += 2 /* length (u16) */ + len(v)
+		}
+	}
+
+	if len(intKV) > 0 {
+		infoSize += 1 /* INFO ID TYPE(u8) */ + 2 /* NUM HEADERS(u16) */
+		for _, v := range intKV {
+			infoSize += 2 /* key (u16) */
+			infoSize += 2 /* length (u16) */ + len(v)
+		}
+	}
+
+	// 4. padding by 4
+	infoSize = ((infoSize + 3) >> 2) << 2
+
+	total += infoSize
+	return
 }
 
 func (t ttHeader) decode(ctx context.Context, message remote.Message, in remote.ByteBuffer) error {
@@ -204,68 +259,6 @@ func (t ttHeader) decode(ctx context.Context, message remote.Message, in remote.
 
 	message.SetPayloadLen(int(totalLen - uint32(headerInfoSize) + Size32 - TTHeaderMetaSize))
 	return err
-}
-
-func writeKVInfo(writtenSize int, message remote.Message, out remote.ByteBuffer) (writeSize int, err error) {
-	writeSize = writtenSize
-	tm := message.TransInfo()
-	// str kv info
-	strKVSize := len(tm.TransStrInfo())
-	if strKVSize > 0 {
-		// INFO ID TYPE(u8) + NUM HEADERS(u16)
-		if err = WriteByte(byte(InfoIDKeyValue), out); err != nil {
-			return writeSize, err
-		}
-		if err = WriteUint16(uint16(strKVSize), out); err != nil {
-			return writeSize, err
-		}
-		writeSize += 3
-		for key, val := range tm.TransStrInfo() {
-			keyWLen, err := WriteString2BLen(key, out)
-			if err != nil {
-				return writeSize, err
-			}
-			valWLen, err := WriteString2BLen(val, out)
-			if err != nil {
-				return writeSize, err
-			}
-			writeSize = writeSize + keyWLen + valWLen
-		}
-	}
-
-	// int kv info
-	intKVSize := len(tm.TransIntInfo())
-	if intKVSize > 0 {
-		// INFO ID TYPE(u8) + NUM HEADERS(u16)
-		if err = WriteByte(byte(InfoIDIntKeyValue), out); err != nil {
-			return writeSize, err
-		}
-		if err = WriteUint16(uint16(intKVSize), out); err != nil {
-			return writeSize, err
-		}
-		writeSize += 3
-		for key, val := range tm.TransIntInfo() {
-			if err = WriteUint16(key, out); err != nil {
-				return writeSize, err
-			}
-			valWLen, err := WriteString2BLen(val, out)
-			if err != nil {
-				return writeSize, err
-			}
-			writeSize = writeSize + 2 + valWLen
-		}
-	}
-	// padding = (4 - headerInfoSize%4) % 4
-	padding := (4 - writeSize%4) % 4
-	paddingBuf, err := out.Malloc(padding)
-	if err != nil {
-		return writeSize, err
-	}
-	for i := 0; i < len(paddingBuf); i++ {
-		paddingBuf[i] = byte(0)
-	}
-	writeSize += padding
-	return
 }
 
 func readKVInfo(idx int, buf []byte, message remote.Message) error {
