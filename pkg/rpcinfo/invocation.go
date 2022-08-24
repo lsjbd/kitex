@@ -24,6 +24,8 @@ import (
 var (
 	invocationPool sync.Pool
 	globalSeqID    int32 = 0
+
+	_ InvocationSetter = (*invocation)(nil)
 )
 
 func init() {

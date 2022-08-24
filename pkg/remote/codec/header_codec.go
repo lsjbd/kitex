@@ -252,19 +252,19 @@ func (t ttHeader) decode(ctx context.Context, message remote.Message, in remote.
 	// }
 	hdIdx += transformIDNum
 
-	if err := readKVInfo(headerInfo[hdIdx:], message); err != nil {
+	intKV := message.TransInfo().TransIntInfo()
+	strKV := message.TransInfo().TransStrInfo()
+	if err := readKVInfo(headerInfo[hdIdx:], intKV, strKV); err != nil {
 		return perrors.NewProtocolErrorWithMsg(fmt.Sprintf("ttHeader read kv info failed, %s", err.Error()))
 	}
-	fillBasicInfoOfTTHeader(message)
+	fillBasicInfoOfTTHeader(message, intKV, strKV)
 
 	totalLen := Bytes2Uint32NoCheck(headerMeta[:Size32])
 	message.SetPayloadLen(int(totalLen - uint32(headerInfoSize) + Size32 - TTHeaderMetaSize))
 	return err
 }
 
-func readKVInfo(bytes []byte, message remote.Message) (err error) {
-	intKV := message.TransInfo().TransIntInfo()
-	strKV := message.TransInfo().TransStrInfo()
+func readKVInfo(bytes []byte, intKV map[uint16]string, strKV map[string]string) (err error) {
 	off, end := 0, len(bytes)
 loop:
 	for off < end {
@@ -466,22 +466,21 @@ func (m meshHeader) decode(ctx context.Context, message remote.Message, in remot
 // It is better to fill rpcinfo in matahandlers in terms of design,
 // but metahandlers are executed after payloadDecode, we don't know from_info when error happen in payloadDecode.
 // So 'fillBasicInfoOfTTHeader' is just for getting more info to output log when decode error happen.
-func fillBasicInfoOfTTHeader(msg remote.Message) {
+func fillBasicInfoOfTTHeader(msg remote.Message, intKV map[uint16]string, strKV map[string]string) {
 	if msg.RPCRole() == remote.Server {
 		fi := rpcinfo.AsMutableEndpointInfo(msg.RPCInfo().From())
 		if fi != nil {
-			ti := msg.TransInfo()
-			if v := ti.TransStrInfo()[transmeta.HeaderTransRemoteAddr]; v != "" {
+			if v := strKV[transmeta.HeaderTransRemoteAddr]; v != "" {
 				fi.SetAddress(utils.NewNetAddr("tcp", v))
 			}
-			if v := ti.TransIntInfo()[transmeta.FromService]; v != "" {
+			if v := intKV[transmeta.FromService]; v != "" {
 				fi.SetServiceName(v)
 			}
 		}
 	} else {
 		ti := remoteinfo.AsRemoteInfo(msg.RPCInfo().To())
 		if ti != nil {
-			if v := msg.TransInfo().TransStrInfo()[transmeta.HeaderTransRemoteAddr]; v != "" {
+			if v := strKV[transmeta.HeaderTransRemoteAddr]; v != "" {
 				ti.SetRemoteAddr(utils.NewNetAddr("tcp", v))
 			}
 		}
