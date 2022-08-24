@@ -242,15 +242,16 @@ func (t ttHeader) decode(ctx context.Context, message remote.Message, in remote.
 	}
 	hdIdx := 2
 	transformIDNum := int(headerInfo[1])
-	if int(headerInfoSize)-hdIdx < transformIDNum {
-		return perrors.NewProtocolErrorWithType(perrors.InvalidData, fmt.Sprintf("need read %d transformIDs, but not enough", transformIDNum))
+	if transformIDNum > 0 {
+		if int(headerInfoSize)-hdIdx < transformIDNum {
+			return perrors.NewProtocolErrorWithType(perrors.InvalidData, fmt.Sprintf("need read %d transformIDs, but not enough", transformIDNum))
+		}
+		transformIDs := make([]uint8, transformIDNum)
+		for i := 0; i < transformIDNum; i++ {
+			transformIDs[i] = headerInfo[hdIdx]
+			hdIdx++
+		}
 	}
-	// transformIDs := make([]uint8, transformIDNum)
-	// for i := 0; i < transformIDNum; i++ {
-	// 	transformIDs[i] = headerInfo[hdIdx]
-	// 	hdIdx++
-	// }
-	hdIdx += transformIDNum
 
 	intKV := message.TransInfo().TransIntInfo()
 	strKV := message.TransInfo().TransStrInfo()
@@ -276,6 +277,7 @@ loop:
 		case InfoIDKeyValue:
 			if off+2 > end {
 				err = io.EOF
+				err = fmt.Errorf("StrKey off[%d]+2 > end[%d]", off, end)
 				break loop
 			} else {
 				cnt := int(bytes[off+1]) | int(bytes[off])<<8
@@ -284,6 +286,7 @@ loop:
 				for i := 0; i < cnt*2; i++ { // string key-value pairs
 					if off+2 > end {
 						err = io.EOF
+						err = fmt.Errorf("StrKey off[%d]+2 > end[%d]: cnt[%d] i[%d]", off, end, cnt, i)
 						break loop
 					}
 					length := int(bytes[off+1]) | int(bytes[off])<<8
@@ -291,6 +294,7 @@ loop:
 
 					if length < 0 || off+length > end {
 						err = io.EOF
+						err = fmt.Errorf("StrKey off[%d]+length[%d] > end[%d]: cnt[%d] i[%d]", off, length, end, cnt, i)
 						break loop
 					}
 					spans[i*2] = off
@@ -308,6 +312,7 @@ loop:
 		case InfoIDIntKeyValue:
 			if off+2 > end {
 				err = io.EOF
+				err = fmt.Errorf("IntKey off[%d]+2 > end[%d]", off, end)
 				break loop
 			} else {
 				cnt := int(bytes[off+1]) | int(bytes[off])<<8
@@ -316,6 +321,7 @@ loop:
 				for i := 0; i < cnt; i++ { // int key & string value
 					if off+4 > end {
 						err = io.EOF
+						err = fmt.Errorf("IntKey off[%d]+4 > end[%d]: cnt[%d] i[%d]", off, end, cnt, i)
 						break loop
 					}
 					key := int(bytes[off+1]) | int(bytes[off])<<8
@@ -324,6 +330,7 @@ loop:
 
 					if length < 0 || off+length > end {
 						err = io.EOF
+						err = fmt.Errorf("IntKey off[%d]+length[%d] > end[%d]: cnt[%d] i[%d]", off, length, end, cnt, i)
 						break loop
 					}
 					spans[i*3] = key
@@ -339,7 +346,7 @@ loop:
 			}
 		case InfoIDACLToken:
 			if off+2 > end {
-				err = io.EOF
+				err = fmt.Errorf("skipACLToken: %w", io.EOF)
 				break loop
 			} else {
 				// skip ACLToken
