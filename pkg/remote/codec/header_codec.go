@@ -126,7 +126,7 @@ func (t ttHeader) encode(ctx context.Context, message remote.Message, out remote
 		return nil, perrors.NewProtocolErrorWithMsg(fmt.Sprintf("ttHeader malloc failed: %s", err.Error()))
 	}
 
-	// _ = buf[15] // bounds check
+	_ = buf[15] // bounds check
 	// 1. header meta
 	flags := HeaderFlags(message.Header().Flags())
 	binary.BigEndian.PutUint32(buf[4:8], TTHeaderMagic+uint32(flags))
@@ -172,6 +172,10 @@ func (t ttHeader) encode(ctx context.Context, message remote.Message, out remote
 			copy(buf[idx+2:], utils.StringToSliceByte(v))
 			idx += 2 + lenV
 		}
+	}
+	for idx < total {
+		buf[idx] = 0
+		idx++
 	}
 
 	return buf[:4], err
